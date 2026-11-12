@@ -180,3 +180,32 @@ El bucket S3 del backend y su historial de versiones no se eliminan automaticame
 - La arquitectura expone **HTTP, no HTTPS**; cumple el endpoint publico del reto pero no esta lista para produccion.
 - No se ha desplegado en tu AWS real desde este paquete; tendras que ejecutar los pasos en tu cuenta y ver el resultado en Actions.
 - Este proyecto es un punto de partida educativo reproducible. Los precios, permisos y servicios disponibles pueden variar segun region y tipo de sandbox.
+
+
+## Evidencias de funcionamiento
+
+### Aplicación Java
+La aplicación Hola Mundo fue desarrollada con Java 21 y Spring Boot.
+
+- Endpoint principal: http://localhost:8080
+- Endpoint de salud: http://localhost:8080/health
+- Compilación realizada mediante Maven dentro de Docker.
+- Imagen Docker construida y ejecutada correctamente.
+
+### Integración continua
+Se configuró GitHub Actions para automatizar:
+
+1. Descarga del código fuente.
+2. Compilación y pruebas con Maven.
+3. Construcción de la imagen Docker.
+4. Validación de la infraestructura con Terraform.
+
+Resultado: ejecución #3 completada correctamente.
+
+### Infraestructura AWS
+La infraestructura está definida mediante Terraform para utilizar Amazon ECR, ECS Fargate y un balanceador de carga.
+
+Estado: pendiente de despliegue en un entorno AWS Sandbox autorizado.
+
+Nota: los endpoints localhost son accesibles localmente; aún no se ha publicado un endpoint público.
+
