@@ -29,3 +29,14 @@ jobs:
 
       - name: Construir imagen Docker
         run: docker build -t reto-java-local .
+
+      
+      - name: Preparar Terraform
+        uses: hashicorp/setup-terraform@v4
+
+      - name: Validar infraestructura Terraform
+        working-directory: infra
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+
