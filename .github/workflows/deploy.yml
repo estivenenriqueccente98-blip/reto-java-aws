@@ -1,0 +1,89 @@
+name: CI/CD - Java a AWS ECS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # Autenticacion OIDC de GitHub ante AWS.
+
+concurrency:
+  group: reto-java-ecs-infra
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      TF_STATE_KEY: ${{ vars.TF_STATE_KEY }}
+      TF_IN_AUTOMATION: true
+
+    steps:
+      - name: Obtener codigo
+        uses: actions/checkout@v6
+
+      - name: Preparar Java 21
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Compilar y ejecutar pruebas
+        run: mvn -B -ntp clean verify
+
+      - name: Autenticarse en AWS usando OIDC
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Preparar Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: '1.14.6'
+          terraform_wrapper: false
+
+      - name: Inicializar estado remoto de Terraform
+        working-directory: infra
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${TF_STATE_BUCKET}" \
+            -backend-config="key=${TF_STATE_KEY}" \
+            -backend-config="region=${AWS_REGION}"
+          terraform validate
+
+      - name: Crear ECR antes de subir la imagen
+        working-directory: infra
+        run: terraform apply -auto-approve -input=false -target=aws_ecr_repository.app -var="aws_region=${AWS_REGION}"
+
+      - name: Identificar imagen unica
+        run: echo "IMAGE_TAG=${GITHUB_SHA:0:12}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_ENV"
+
+      - name: Iniciar sesion en ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Construir imagen con Maven dentro de Docker y subirla a ECR
+        run: |
+          ECR_REPO="$(terraform -chdir=infra output -raw ecr_repository_url)"
+          docker build --platform linux/amd64 -t "${ECR_REPO}:${IMAGE_TAG}" .
+          docker push "${ECR_REPO}:${IMAGE_TAG}"
+
+      - name: Crear o actualizar ECS y el balanceador con Terraform
+        working-directory: infra
+        run: terraform apply -auto-approve -input=false -var="aws_region=${AWS_REGION}" -var="image_tag=${IMAGE_TAG}"
+
+      - name: Comprobar que la API responde publicamente
+        working-directory: infra
+        run: |
+          APP_URL="$(terraform output -raw app_url)"
+          HEALTH_URL="$(terraform output -raw health_url)"
+          curl --fail --silent --show-error --retry 12 --retry-delay 10 --retry-all-errors "${HEALTH_URL}"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "## API desplegada" >> "$GITHUB_STEP_SUMMARY"
+          echo "- URL: ${APP_URL}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Salud: ${HEALTH_URL}" >> "$GITHUB_STEP_SUMMARY"

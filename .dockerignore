@@ -1,0 +1,10 @@
+.git
+.github
+.terraform
+**/.terraform
+**/*.tfstate*
+**/.terraform.lock.hcl
+**/target
+README.md
+scripts
+infra
