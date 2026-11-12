@@ -1,10 +1,8 @@
 name: CI/CD - Java a AWS ECS
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
-
+  
 permissions:
   contents: read
   id-token: write # Autenticacion OIDC de GitHub ante AWS.
