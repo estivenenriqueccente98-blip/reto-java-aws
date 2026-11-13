@@ -1,0 +1,103 @@
+
+name: CD - Java Docker AWS ECS (Manual)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reto-java-mini-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      AWS_REGION: us-east-2
+      ECR_REPOSITORY: reto-java-ecs
+      ECS_CLUSTER: reto-java-mini
+      ECS_SERVICE: reto-java-mini
+
+    steps:
+      - name: Descargar codigo
+        uses: actions/checkout@v4
+
+      - name: Configurar Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Compilar con Maven
+        run: mvn -B -ntp clean verify
+
+      - name: Autenticarse en AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Iniciar sesion en ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Preparar imagen Docker
+        run: |
+          ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+          REPO="$ACCOUNT.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY"
+          TAG="${GITHUB_SHA:0:12}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "IMAGE_URI=$REPO:$TAG" >> "$GITHUB_ENV"
+
+      - name: Construir y publicar Docker
+        run: |
+          docker build --platform linux/amd64 -t "$IMAGE_URI" .
+          docker push "$IMAGE_URI"
+
+      - name: Preparar nueva tarea ECS
+        run: |
+          CURRENT=$(aws ecs describe-services \
+            --cluster "$ECS_CLUSTER" \
+            --services "$ECS_SERVICE" \
+            --query 'services[0].taskDefinition' \
+            --output text)
+
+          aws ecs describe-task-definition \
+            --task-definition "$CURRENT" \
+            --query 'taskDefinition' \
+            --output json | jq --arg IMAGE "$IMAGE_URI" '
+              del(.taskDefinitionArn, .revision, .status,
+                  .requiresAttributes, .compatibilities,
+                  .registeredAt, .registeredBy, .deregisteredAt)
+              | (.containerDefinitions[] | select(.name == "app") | .image) = $IMAGE
+            ' > task-definition.json
+
+      - name: Actualizar servicio ECS
+        run: |
+          NEW_TASK=$(aws ecs register-task-definition \
+            --cli-input-json file://task-definition.json \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service "$ECS_SERVICE" \
+            --task-definition "$NEW_TASK" \
+            --query 'service.{Tarea:taskDefinition,Deseadas:desiredCount}' \
+            --output table
+
+          DESIRED=$(aws ecs describe-services \
+            --cluster "$ECS_CLUSTER" \
+            --services "$ECS_SERVICE" \
+            --query 'services[0].desiredCount' \
+            --output text)
+
+          if [ "$DESIRED" = "0" ]; then
+            echo "ECS sigue apagado. Enciendelo solo para la demostracion."
+          fi
+
+          echo "Imagen desplegada: $IMAGE_URI"
