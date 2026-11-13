@@ -1,0 +1,106 @@
+
+name: Terraform - Infra ECS (Manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      operacion:
+        description: "Selecciona una operacion"
+        required: true
+        type: choice
+        default: validar
+        options:
+          - validar
+          - planificar
+          - aplicar
+
+      confirmacion:
+        description: "Para aplicar escribe APLICAR-INFRA"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reto-java-terraform-mini
+  cancel-in-progress: false
+
+jobs:
+  terraform:
+    name: Validar infraestructura AWS
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: infra-mini
+
+    env:
+      AWS_REGION: us-east-2
+      AWS_DEFAULT_REGION: us-east-2
+
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v4
+
+      - name: Preparar Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: 1.14.6
+          terraform_wrapper: false
+
+      - name: Revisar formato
+        run: terraform fmt -check
+
+      - name: Inicializar para validar
+        if: inputs.operacion == 'validar'
+        run: terraform init -backend=false -input=false
+
+      - name: Validar Terraform
+        if: inputs.operacion == 'validar'
+        run: terraform validate
+
+      - name: Comprobar confirmacion
+        if: inputs.operacion == 'aplicar'
+        env:
+          CONFIRMACION: ${{ inputs.confirmacion }}
+        run: |
+          if [ "$CONFIRMACION" != "APLICAR-INFRA" ]; then
+            echo "ERROR: Confirmacion incorrecta"
+            exit 1
+          fi
+
+      - name: Autenticarse en AWS
+        if: inputs.operacion != 'validar'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-2
+
+      - name: Inicializar estado S3
+        if: inputs.operacion != 'validar'
+        run: |
+          ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+          BUCKET="reto-java-aws-state-$ACCOUNT-us-east-2"
+
+          terraform init -reconfigure -input=false \
+            -backend-config="bucket=$BUCKET" \
+            -backend-config="key=reto-java-mini/terraform.tfstate" \
+            -backend-config="region=us-east-2"
+
+      - name: Generar plan
+        if: inputs.operacion != 'validar'
+        run: terraform plan -input=false -out=plan.bin
+
+      - name: Bloquear eliminaciones
+        if: inputs.operacion == 'aplicar'
+        run: |
+          terraform show -json plan.bin | jq -e \
+            '[.resource_changes[]? |
+            select(.change.actions | index("delete"))] |
+            length == 0'
+
+      - name: Aplicar infraestructura
+        if: inputs.operacion == 'aplicar'
+        run: terraform apply -input=false plan.bin
